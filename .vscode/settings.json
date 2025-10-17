@@ -1,0 +1,6 @@
+{
+    "python.analysis.extraPaths": [
+        "./hello_world/gemini_",
+        "./hello_world/gemini_"
+    ]
+}
