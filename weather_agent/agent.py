@@ -8,6 +8,7 @@ import time
 from openai import RateLimitError
 from pydantic import BaseModel, Field
 from typing import Optional
+import subprocess
 
 load_dotenv()
 
@@ -34,14 +35,25 @@ SYSTEM_PROMPT = """
     - Strictly return **only one** JSON object per message, not an array.
     - Each Step at a time.
     - The sequence of steps is - START (where user inputs an query), PLAN(it can be in multiple steps, think step by step for the query) and then OUTPUT(which is going to be displayed to the user)
+    - When using create_file, always send both "file_path" and "content" as keys inside input. Example:
+    { "step": "TOOL", "tool": "create_file", "input": {"file_path": "todo/index.html", "content": "<html>...</html>"} }
+    - Similarly, for update_file, include {"file_path": "...", "new_content": "...", "mode": "overwrite"}.
     
     OUTPUT Json Format - 
     { "step": "START" | "PLAN" | "TOOL" | "OUTPUT", "content": "string", "tool": "string", "input": "string" }
 
     Available Tools:
-    - get_weather: Takes city name as an input string parameter and returns the weather info about the city.
-    - run_command(cmd: str): Takes a system linux command as string and executes the command on user's system and returns the output from that command.
+    - get_weather(city: str): Takes a city name and returns the weather info.
+    - run_command(cmd: str): Executes a Linux command.
+    - create_file(file_path: str, content: str): Creates a new file with optional content.
+    - create_folder(folder_path: str): Creates a new folder (recursively if needed).
+    - update_file(file_path: str, new_content: str, mode: str = "append"): Updates or overwrites a file.
+    - run_windows_command(cmd: str): Executes a Windows command and returns output.
     
+    Notes:
+    - When user asks for file/folder operations, prefer using the respective tool.
+    - Use run_windows_command for commands like 'dir', 'echo', 'type', 'mkdir', etc.
+
     Example 1:
     START: Hey Can you solve 2 + 2 * 5 / 10 - 55 + 360 ?
     PLAN: { "step": "PLAN", "content": "User wants to solve maths problem"}.
@@ -57,7 +69,7 @@ SYSTEM_PROMPT = """
             -52 + 360 = 308."}
     OUTPUT: { "step": "PLAN", "content": "308"}
 
-    Example 1:
+    Example 2:
     START: What is te weather of bhopal ?
     PLAN: { "step": "PLAN", "content": "Seems like user is intersted in weather info of bhopal city in india"}.
     PLAN: { "step": "PLAN", "content": "Lets see if we have any available tools to get weather info from the list of available tools"}.
@@ -76,6 +88,54 @@ class MyOutputFormat(BaseModel):
     tool: Optional[str] = Field(None, description="The ID of the tool to call.")
     input: Optional[str] = Field(None, description="The input params for the tool")
 
+def run_command(cmd: str):
+    result = os.system(cmd)
+    return result
+
+def run_windows_command(cmd: str):
+    """Executes a Windows command and returns its output."""
+    try:
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        if result.returncode == 0:
+            return f"💻 Command executed successfully:\n{result.stdout}"
+        else:
+            return f"⚠️ Command failed:\n{result.stderr}"
+    except Exception as e:
+        return f"❌ Error executing command: {str(e)}"
+
+def create_file(file_path: str, content: str = ""):
+    """Creates a new file with optional content."""
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return f"✅ File created successfully at {file_path}"
+    except Exception as e:
+        return f"❌ Failed to create file: {str(e)}"
+
+def create_folder(folder_path: str):
+    """Creates a new folder (and parents if missing)."""
+    try:
+        os.makedirs(folder_path, exist_ok=True)
+        return f"📁 Folder created at {folder_path}"
+    except Exception as e:
+        return f"❌ Failed to create folder: {str(e)}"
+
+def update_file(file_path: str, new_content: str, mode: str = "append"):
+    """
+    Updates an existing file.
+    mode: "append" (default) adds new content, "overwrite" replaces entire content.
+    """
+    try:
+        if mode == "overwrite":
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(new_content)
+        else:
+            with open(file_path, "a", encoding="utf-8") as f:
+                f.write("\n" + new_content)
+        return f"📝 File {file_path} updated successfully in {mode} mode."
+    except Exception as e:
+        return f"❌ Failed to update file: {str(e)}"
+
 
 def get_weather(city: str):
     url =  f"https://wttr.in/{city.lower()}?format=%C+%t"
@@ -92,7 +152,11 @@ def run_command(cmd: str):
 
 available_tools = {
     "get_weather": get_weather,
-    "run_command": run_command
+    "run_command": run_command,
+    "create_file": create_file,
+    "create_folder": create_folder,
+    "update_file": update_file,
+    "run_windows_command": run_windows_command
 }
 
 user_query = input("👉 ")
@@ -135,9 +199,15 @@ while True:
         tool_input = parsed_result.input
         print(f"⚒️ , {tool_to_call} ({tool_input})")
 
-        tool_response =  available_tools[tool_to_call](tool_input)
-        message_history.append({"role": "developer", "content": json.dumps({"step": "OBSERVE", "tool": tool_to_call, "input": tool_input, "output": tool_response})})
-        continue
+        # 🧠 Handle JSON input (dict) or plain string gracefully
+        tool_func = available_tools.get(tool_to_call)
+
+        if isinstance(tool_input, str):
+            tool_response = tool_func(tool_input)
+        elif isinstance(tool_input, dict):
+            tool_response = tool_func(**tool_input)
+        else:
+            tool_response = f"❌ Invalid tool input format: {tool_input}"
 
     if parsed_result.step == "PLAN":
         print("🧠 ", parsed_result.content)
